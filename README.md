@@ -1,2 +1,2 @@
 # AiOENet
-The trained model will be updated soon.
+The pre-trained model will be updated soon.
