@@ -19,9 +19,160 @@ from einops import rearrange
 
 import numbers
 
-##########################################################################
-## Layer Norm
+class AiOENet(nn.Module):
+	def __init__(self,channel = 16):
+		super(AiOENet,self).__init__()
 
+		self.Haze_E = Encoder(channel)
+		self.Low_E  = Encoder(channel)
+		self.Rain_E = Encoder(channel)
+		self.Snow_E = Encoder(channel)
+        
+		self.Share  =SNet(channel)
+		#self.Share_D  = Decoder(channel)
+        
+		self.Haze_D = Decoder(channel)
+		self.Low_D  = Decoder(channel)
+		self.Rain_D = Decoder(channel)
+		self.Snow_D = Decoder(channel)
+        
+		self.Haze_in = nn.Conv2d(4,channel,kernel_size=1,stride=1,padding=0,bias=False)        
+		self.Haze_out = nn.Conv2d(channel,3,kernel_size=1,stride=1,padding=0,bias=False)   
+
+		self.Low_in = nn.Conv2d(4,channel,kernel_size=1,stride=1,padding=0,bias=False)        
+		self.Low_out = nn.Conv2d(channel,3,kernel_size=1,stride=1,padding=0,bias=False)  
+
+		self.Rain_in = nn.Conv2d(4,channel,kernel_size=1,stride=1,padding=0,bias=False)        
+		self.Rain_out = nn.Conv2d(channel,3,kernel_size=1,stride=1,padding=0,bias=False) 
+
+		self.Snow_in = nn.Conv2d(4,channel,kernel_size=1,stride=1,padding=0,bias=False)        
+		self.Snow_out = nn.Conv2d(channel,3,kernel_size=1,stride=1,padding=0,bias=False)         
+        
+	def forward(self,x,Type):
+        
+
+		if   Type == 0:
+			x_in = self.Haze_in(x)            
+			L,M,S,SS = self.Haze_E(x_in)
+			Share = self.Share(SS)
+			x_out = self.Haze_D(Share,SS,S,M,L)
+			out = self.Haze_out(x_out)# + x
+            
+		elif Type == 2:
+			x_in = self.Low_in(x)             
+			L,M,S,SS = self.Low_E(x_in)
+			Share = self.Share(SS)
+			x_out = self.Low_D(Share,SS,S,M,L)
+			out = self.Low_out(x_out)# + x
+
+		elif Type == 4:
+			x_in = self.Rain_in(x)             
+			L,M,S,SS = self.Rain_E(x_in)
+			Share = self.Share(SS)
+			x_out = self.Rain_D(Share,SS,S,M,L)
+			out = self.Rain_out(x_out)# + x
+
+		else:
+			x_in = self.Snow_in(x)             
+			L,M,S,SS = self.Snow_E(x_in)
+			Share = self.Share(SS)
+			x_out = self.Snow_D(Share,SS,S,M,L)
+			out = self.Snow_out(x_out)#+ x            
+            
+		return out
+
+class Encoder(nn.Module):
+	def __init__(self,channel):
+		super(Encoder,self).__init__()    
+
+		self.el = ResidualBlock(channel)
+		self.em = ResidualBlock(channel*2)
+		self.es = ResidualBlock(channel*4)
+		self.ess = ResidualBlock(channel*8)
+		self.esss = ResidualBlock(channel*16)
+        
+		self.maxpool = nn.MaxPool2d(kernel_size=3,stride=2,padding=1)
+		self.conv_eltem = nn.Conv2d(channel,2*channel,kernel_size=1,stride=1,padding=0,bias=False)   
+		self.conv_emtes = nn.Conv2d(2*channel,4*channel,kernel_size=1,stride=1,padding=0,bias=False)   
+		self.conv_estess = nn.Conv2d(4*channel,8*channel,kernel_size=1,stride=1,padding=0,bias=False)  
+		self.conv_esstesss = nn.Conv2d(8*channel,16*channel,kernel_size=1,stride=1,padding=0,bias=False)
+        
+	def forward(self,x):
+        
+		elout = self.el(x)
+		x_emin = self.conv_eltem(self.maxpool(elout))
+		emout = self.em(x_emin)
+		x_esin = self.conv_emtes(self.maxpool(emout))        
+		esout = self.es(x_esin)
+		x_esin = self.conv_estess(self.maxpool(esout))        
+		essout = self.ess(x_esin)
+
+        
+		return elout,emout,esout,essout#,esssout
+
+
+class Decoder(nn.Module):
+	def __init__(self,channel):
+		super(Decoder,self).__init__()    
+
+		#self.dsss = ResidualBlock(channel*16)
+		self.dss = ResidualBlock(channel*8)
+		self.ds = ResidualBlock(channel*4)
+		self.dm = ResidualBlock(channel*2)
+		self.dl = ResidualBlock(channel)
+        
+		self.conv_dssstdss = nn.Conv2d(16*channel,8*channel,kernel_size=1,stride=1,padding=0,bias=False)   
+		self.conv_dsstds = nn.Conv2d(8*channel,4*channel,kernel_size=1,stride=1,padding=0,bias=False)           
+		self.conv_dstdm = nn.Conv2d(4*channel,2*channel,kernel_size=1,stride=1,padding=0,bias=False)   
+		self.conv_dmtdl = nn.Conv2d(2*channel,channel,kernel_size=1,stride=1,padding=0,bias=False)
+        
+	def _upsample(self,x):
+		_,_,H,W = x.size()
+		return F.upsample(x,size=(2*H,2*W),mode='bilinear')
+    
+	def forward(self,x,ss,s,m,l):
+
+
+		dssout = self.dss(x+ss)
+		x_dsin = self.conv_dsstds(self._upsample(dssout))        
+		dsout = self.ds(x_dsin+s)
+		x_dmin = self.conv_dstdm(self._upsample(dsout))
+		dmout = self.dm(x_dmin+m)
+		x_dlin = self.conv_dmtdl(self._upsample(dmout))
+		dlout = self.dl(x_dlin+l)
+        
+		return dlout
+    
+
+
+class ResidualBlock(nn.Module):# Edge-oriented Residual Convolution Block
+	def __init__(self,channel,norm=False):                                
+		super(ResidualBlock,self).__init__()
+
+		self.conv_1_1 = nn.Conv2d(channel,  channel,kernel_size=3,stride=1,padding=1,bias=False)
+		self.conv_2_1 = nn.Conv2d(channel,channel,kernel_size=3,stride=1,padding=1,bias=False)
+        
+		self.conv_out = nn.Conv2d(channel,channel,kernel_size=3,stride=1,padding=1,bias=False)
+        
+		self.act = nn.PReLU(channel)
+		self.sig= nn.Sigmoid()
+
+		self.norm =nn.GroupNorm(num_channels=channel,num_groups=1)# nn.InstanceNorm2d(channel)#
+   
+	def _upsample(self,x,y):
+		_,_,H,W = y.size()
+		return F.upsample(x,size=(H,W),mode='bilinear')
+
+
+	def forward(self,x):
+        
+		x_1 = self.act(self.norm(self.conv_1_1(x)))
+		x_2 = self.act(self.norm(self.conv_2_1(x_1)))
+		x_out = self.act(self.norm(self.conv_out(x_2)) + x)
+
+
+		return	x_out        
+    
 def to_3d(x):
     return rearrange(x, 'b c h w -> b (h w) c')
 
@@ -175,158 +326,3 @@ class SNet(nn.Module):
 
 
 		return T4
-    
-class AiOENet(nn.Module):
-	def __init__(self,channel = 16):
-		super(AiOENet,self).__init__()
-
-		self.Haze_E = Encoder(channel)
-		self.Low_E  = Encoder(channel)
-		self.Rain_E = Encoder(channel)
-		self.Snow_E = Encoder(channel)
-        
-		self.Share  =SNet(channel)
-		#self.Share_D  = Decoder(channel)
-        
-		self.Haze_D = Decoder(channel)
-		self.Low_D  = Decoder(channel)
-		self.Rain_D = Decoder(channel)
-		self.Snow_D = Decoder(channel)
-        
-		self.Haze_in = nn.Conv2d(3,channel,kernel_size=1,stride=1,padding=0,bias=False)        
-		self.Haze_out = nn.Conv2d(channel,3,kernel_size=1,stride=1,padding=0,bias=False)   
-
-		self.Low_in = nn.Conv2d(3,channel,kernel_size=1,stride=1,padding=0,bias=False)        
-		self.Low_out = nn.Conv2d(channel,3,kernel_size=1,stride=1,padding=0,bias=False)  
-
-		self.Rain_in = nn.Conv2d(3,channel,kernel_size=1,stride=1,padding=0,bias=False)        
-		self.Rain_out = nn.Conv2d(channel,3,kernel_size=1,stride=1,padding=0,bias=False) 
-
-		self.Snow_in = nn.Conv2d(3,channel,kernel_size=1,stride=1,padding=0,bias=False)        
-		self.Snow_out = nn.Conv2d(channel,3,kernel_size=1,stride=1,padding=0,bias=False)         
-        
-	def forward(self,x,Type):
-        
-
-		if   Type == 0:
-			x_in = self.Haze_in(x)            
-			L,M,S,SS = self.Haze_E(x_in)
-			Share = self.Share(SS)
-			x_out = self.Haze_D(Share,SS,S,M,L)
-			out = self.Haze_out(x_out)# + x
-            
-		elif Type == 2:
-			x_in = self.Low_in(x)             
-			L,M,S,SS = self.Low_E(x_in)
-			Share = self.Share(SS)
-			x_out = self.Low_D(Share,SS,S,M,L)
-			out = self.Low_out(x_out)# + x
-
-		elif Type == 4:
-			x_in = self.Rain_in(x)             
-			L,M,S,SS = self.Rain_E(x_in)
-			Share = self.Share(SS)
-			x_out = self.Rain_D(Share,SS,S,M,L)
-			out = self.Rain_out(x_out)# + x
-
-		else:
-			x_in = self.Snow_in(x)             
-			L,M,S,SS = self.Snow_E(x_in)
-			Share = self.Share(SS)
-			x_out = self.Snow_D(Share,SS,S,M,L)
-			out = self.Snow_out(x_out)#+ x            
-            
-		return out
-
-class Encoder(nn.Module):
-	def __init__(self,channel):
-		super(Encoder,self).__init__()    
-
-		self.el = ResidualBlock(channel)
-		self.em = ResidualBlock(channel*2)
-		self.es = ResidualBlock(channel*4)
-		self.ess = ResidualBlock(channel*8)
-		self.esss = ResidualBlock(channel*16)
-        
-		self.maxpool = nn.MaxPool2d(kernel_size=3,stride=2,padding=1)
-		self.conv_eltem = nn.Conv2d(channel,2*channel,kernel_size=1,stride=1,padding=0,bias=False)   
-		self.conv_emtes = nn.Conv2d(2*channel,4*channel,kernel_size=1,stride=1,padding=0,bias=False)   
-		self.conv_estess = nn.Conv2d(4*channel,8*channel,kernel_size=1,stride=1,padding=0,bias=False)  
-		self.conv_esstesss = nn.Conv2d(8*channel,16*channel,kernel_size=1,stride=1,padding=0,bias=False)
-        
-	def forward(self,x):
-        
-		elout = self.el(x)
-		x_emin = self.conv_eltem(self.maxpool(elout))
-		emout = self.em(x_emin)
-		x_esin = self.conv_emtes(self.maxpool(emout))        
-		esout = self.es(x_esin)
-		x_esin = self.conv_estess(self.maxpool(esout))        
-		essout = self.ess(x_esin)
-
-        
-		return elout,emout,esout,essout#,esssout
-
-
-class Decoder(nn.Module):
-	def __init__(self,channel):
-		super(Decoder,self).__init__()    
-
-		#self.dsss = ResidualBlock(channel*16)
-		self.dss = ResidualBlock(channel*8)
-		self.ds = ResidualBlock(channel*4)
-		self.dm = ResidualBlock(channel*2)
-		self.dl = ResidualBlock(channel)
-        
-		self.conv_dssstdss = nn.Conv2d(16*channel,8*channel,kernel_size=1,stride=1,padding=0,bias=False)   
-		self.conv_dsstds = nn.Conv2d(8*channel,4*channel,kernel_size=1,stride=1,padding=0,bias=False)           
-		self.conv_dstdm = nn.Conv2d(4*channel,2*channel,kernel_size=1,stride=1,padding=0,bias=False)   
-		self.conv_dmtdl = nn.Conv2d(2*channel,channel,kernel_size=1,stride=1,padding=0,bias=False)
-        
-	def _upsample(self,x):
-		_,_,H,W = x.size()
-		return F.upsample(x,size=(2*H,2*W),mode='bilinear')
-    
-	def forward(self,x,ss,s,m,l):
-
-
-		dssout = self.dss(x+ss)
-		x_dsin = self.conv_dsstds(self._upsample(dssout))        
-		dsout = self.ds(x_dsin+s)
-		x_dmin = self.conv_dstdm(self._upsample(dsout))
-		dmout = self.dm(x_dmin+m)
-		x_dlin = self.conv_dmtdl(self._upsample(dmout))
-		dlout = self.dl(x_dlin+l)
-        
-		return dlout
-    
-
-
-class ResidualBlock(nn.Module):# Edge-oriented Residual Convolution Block
-	def __init__(self,channel,norm=False):                                
-		super(ResidualBlock,self).__init__()
-
-		self.conv_1_1 = nn.Conv2d(channel,  channel,kernel_size=3,stride=1,padding=1,bias=False)
-		self.conv_2_1 = nn.Conv2d(channel,channel,kernel_size=3,stride=1,padding=1,bias=False)
-        
-		self.conv_out = nn.Conv2d(channel,channel,kernel_size=3,stride=1,padding=1,bias=False)
-        
-		self.act = nn.PReLU(channel)
-		self.sig= nn.Sigmoid()
-
-		self.norm =nn.GroupNorm(num_channels=channel,num_groups=1)# nn.InstanceNorm2d(channel)#
-   
-	def _upsample(self,x,y):
-		_,_,H,W = y.size()
-		return F.upsample(x,size=(H,W),mode='bilinear')
-
-
-	def forward(self,x):
-        
-		x_1 = self.act(self.norm(self.conv_1_1(x)))
-		x_2 = self.act(self.norm(self.conv_2_1(x_1)))
-		x_out = self.act(self.norm(self.conv_out(x_2)) + x)
-
-
-		return	x_out        
-    
