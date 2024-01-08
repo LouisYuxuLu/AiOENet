@@ -38,9 +38,6 @@ def hwc_to_chw(img):
 
 def chw_to_hwc(img):
     return np.transpose(img, axes=[1, 2, 0])
-	
-def get_Laplacian(img):
-    return np.transpose(img, axes=[1, 2, 0])
 
 
 if __name__ == '__main__': 	
